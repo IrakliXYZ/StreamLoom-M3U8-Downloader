@@ -1,0 +1,65 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <title>StreamLoom</title>
+    <link rel="stylesheet" href="popup.css" />
+  </head>
+  <body>
+    <div class="app">
+      <header class="top">
+        <div class="brand">
+          <div class="mark"></div>
+          <div class="title">StreamLoom</div>
+        </div>
+        <button id="refreshBtn" class="icon-btn" title="Refresh">
+          <span class="icon">↻</span>
+        </button>
+      </header>
+
+      <main class="panel">
+        <div class="field">
+          <label class="label" for="candidateSelect">Found streams</label>
+          <select id="candidateSelect" class="select"></select>
+          <div id="candidateHint" class="hint"></div>
+          <div class="row">
+            <button id="scanBtn" class="btn secondary">Scan page</button>
+            <button id="clearBtn" class="btn ghost">Clear</button>
+          </div>
+        </div>
+
+        <div class="divider"></div>
+
+        <div class="field">
+          <label class="label" for="qualitySelect">Quality</label>
+          <select id="qualitySelect" class="select" disabled></select>
+          <div id="qualityHint" class="hint"></div>
+        </div>
+
+        <div class="divider"></div>
+
+        <div class="field">
+          <label class="label" for="filenameInput">Filename</label>
+          <input id="filenameInput" class="input" placeholder="video.mp4" />
+          <div class="row">
+            <button id="downloadBtn" class="btn primary" disabled>Download MP4</button>
+          </div>
+          <div id="status" class="status"></div>
+          <div class="bar">
+            <div id="barFill" class="bar-fill"></div>
+          </div>
+        </div>
+      </main>
+
+      <footer class="foot">
+        <div class="foot-row">
+          <a id="openSite" class="foot-link" href="#" target="_blank" rel="noreferrer">Open source tab</a>
+          <a class="foot-link subtle" href="https://hunkydory.studio" target="_blank" rel="noreferrer">Hunkydory Studio</a>
+        </div>
+      </footer>
+    </div>
+
+    <script type="module" src="popup.js"></script>
+  </body>
+</html>
