@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "StreamLoom: HLS/m3u8 Video Downloader",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Find HLS (m3u8) streams on the current page and download as MP4 locally.",
   "icons": {
     "16": "icons/icon16.png",
@@ -25,6 +25,7 @@
   },
   "permissions": [
     "activeTab",
+    "declarativeNetRequest",
     "downloads",
     "offscreen",
     "scripting",

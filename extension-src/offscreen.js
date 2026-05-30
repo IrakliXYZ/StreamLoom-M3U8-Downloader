@@ -25,11 +25,18 @@ const ensureFfmpeg = async (jobId) => {
 };
 
 const fetchText = async (u, referer) => {
-  const headers = {};
-  if (referer) headers['Referer'] = referer;
-  const res = await fetch(u, { credentials: 'include', headers });
-  if (!res.ok) throw new Error(`Failed to fetch: ${res.status}`);
-  return await res.text();
+  if (referer) {
+    await chrome.runtime.sendMessage({ type: 'setRefererRule', targetUrl: u, referer });
+  }
+  try {
+    const res = await fetch(u, { credentials: 'include' });
+    if (!res.ok) throw new Error(`Failed to fetch: ${res.status}`);
+    return await res.text();
+  } finally {
+    if (referer) {
+      await chrome.runtime.sendMessage({ type: 'clearRefererRule', targetUrl: u });
+    }
+  }
 };
 
 const parseMediaPlaylist = (text, baseUrl) => {
@@ -48,14 +55,43 @@ const rewriteKeyLine = async (line, baseUrl, keyIndex, referer) => {
   if (!m) return { line, wroteKey: false };
   const keyUrl = new URL(m[1], baseUrl).toString();
   const keyName = `key_${String(keyIndex).padStart(3, '0')}.bin`;
-  const headers = {};
-  if (referer) headers['Referer'] = referer;
-  const res = await fetch(keyUrl, { credentials: 'include', headers });
-  if (!res.ok) throw new Error(`Failed to fetch key: ${res.status}`);
-  const buf = new Uint8Array(await res.arrayBuffer());
-  await ffmpeg.writeFile(keyName, buf);
+  if (referer) {
+    await chrome.runtime.sendMessage({ type: 'setRefererRule', targetUrl: keyUrl, referer });
+  }
+  try {
+    const res = await fetch(keyUrl, { credentials: 'include' });
+    if (!res.ok) throw new Error(`Failed to fetch key: ${res.status}`);
+    const buf = new Uint8Array(await res.arrayBuffer());
+    await ffmpeg.writeFile(keyName, buf);
+  } finally {
+    if (referer) {
+      await chrome.runtime.sendMessage({ type: 'clearRefererRule', targetUrl: keyUrl });
+    }
+  }
   const rewritten = line.replace(/URI="([^"]+)"/, `URI="${keyName}"`);
   return { line: rewritten, wroteKey: true };
+};
+
+const rewriteMapLine = async (line, baseUrl, mapIndex, referer) => {
+  const m = line.match(/URI="([^"]+)"/);
+  if (!m) return { line, wroteMap: false };
+  const mapUrl = new URL(m[1], baseUrl).toString();
+  const mapName = `map_${String(mapIndex).padStart(3, '0')}.mp4`;
+  if (referer) {
+    await chrome.runtime.sendMessage({ type: 'setRefererRule', targetUrl: mapUrl, referer });
+  }
+  try {
+    const res = await fetch(mapUrl, { credentials: 'include' });
+    if (!res.ok) throw new Error(`Failed to fetch map segment: ${res.status}`);
+    const buf = new Uint8Array(await res.arrayBuffer());
+    await ffmpeg.writeFile(mapName, buf);
+  } finally {
+    if (referer) {
+      await chrome.runtime.sendMessage({ type: 'clearRefererRule', targetUrl: mapUrl });
+    }
+  }
+  const rewritten = line.replace(/URI="([^"]+)"/, `URI="${mapName}"`);
+  return { line: rewritten, wroteMap: true };
 };
 
 const buildLocalPlaylist = async (playlistUrl, referer, jobId) => {
@@ -68,6 +104,9 @@ const buildLocalPlaylist = async (playlistUrl, referer, jobId) => {
   const outLines = [];
   let segIndex = 0;
   let keyIndex = 0;
+  let mapIndex = 0;
+  let lastEndByte = 0;
+  let currentByteRange = null;
 
   const mediaUrls = parseMediaPlaylist(original, playlistUrl);
   const totalSegs = mediaUrls.length || 1;
@@ -84,6 +123,24 @@ const buildLocalPlaylist = async (playlistUrl, referer, jobId) => {
       const r = await rewriteKeyLine(raw, playlistUrl, keyIndex, referer);
       if (r.wroteKey) keyIndex += 1;
       outLines.push(r.line);
+      continue;
+    }
+
+    if (line.startsWith('#EXT-X-MAP')) {
+      const r = await rewriteMapLine(raw, playlistUrl, mapIndex, referer);
+      if (r.wroteMap) mapIndex += 1;
+      outLines.push(r.line);
+      continue;
+    }
+
+    if (line.startsWith('#EXT-X-BYTERANGE')) {
+      const val = line.slice(line.indexOf(':') + 1).trim();
+      const parts = val.split('@');
+      const length = Number(parts[0]);
+      const offset = parts[1] ? Number(parts[1]) : lastEndByte;
+      currentByteRange = { offset, length };
+      lastEndByte = offset + length;
+      // Omit #EXT-X-BYTERANGE from local manifest as segments are saved as separate whole files
       continue;
     }
 
@@ -112,12 +169,24 @@ const buildLocalPlaylist = async (playlistUrl, referer, jobId) => {
       progress: 0.06 + 0.64 * (segIndex / totalSegs),
     });
 
-    const headers = {};
-    if (referer) headers['Referer'] = referer;
-    const res = await fetch(abs, { credentials: 'include', headers });
-    if (!res.ok) throw new Error(`Failed segment ${segIndex + 1}: ${res.status}`);
-    const buf = new Uint8Array(await res.arrayBuffer());
-    await ffmpeg.writeFile(local, buf);
+    if (referer) {
+      await chrome.runtime.sendMessage({ type: 'setRefererRule', targetUrl: abs, referer });
+    }
+    try {
+      const headers = {};
+      if (currentByteRange) {
+        headers['Range'] = `bytes=${currentByteRange.offset}-${currentByteRange.offset + currentByteRange.length - 1}`;
+        currentByteRange = null;
+      }
+      const res = await fetch(abs, { credentials: 'include', headers });
+      if (!res.ok) throw new Error(`Failed segment ${segIndex + 1}: ${res.status}`);
+      const buf = new Uint8Array(await res.arrayBuffer());
+      await ffmpeg.writeFile(local, buf);
+    } finally {
+      if (referer) {
+        await chrome.runtime.sendMessage({ type: 'clearRefererRule', targetUrl: abs });
+      }
+    }
     outLines.push(local);
     segIndex += 1;
   }

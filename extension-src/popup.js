@@ -50,11 +50,18 @@ const defaultFilename = (tabUrl) => {
 };
 
 const fetchText = async (u, referer) => {
-  const headers = {};
-  if (referer) headers['Referer'] = referer;
-  const res = await fetch(u, { credentials: 'include', headers });
-  if (!res.ok) throw new Error(`Failed to fetch playlist: ${res.status}`);
-  return await res.text();
+  if (referer) {
+    await chrome.runtime.sendMessage({ type: 'setRefererRule', targetUrl: u, referer });
+  }
+  try {
+    const res = await fetch(u, { credentials: 'include' });
+    if (!res.ok) throw new Error(`Failed to fetch playlist: ${res.status}`);
+    return await res.text();
+  } finally {
+    if (referer) {
+      await chrome.runtime.sendMessage({ type: 'clearRefererRule', targetUrl: u });
+    }
+  }
 };
 
 const parseMaster = (text, baseUrl) => {
@@ -75,8 +82,17 @@ const parseMaster = (text, baseUrl) => {
       attrs[k] = v;
     }
 
-    const uri = (lines[i + 1] ?? '').trim();
-    if (!uri || uri.startsWith('#')) continue;
+    let uri = '';
+    for (let j = i + 1; j < lines.length; j++) {
+      const nextLine = lines[j].trim();
+      if (!nextLine) continue;
+      if (nextLine.startsWith('#')) {
+        break;
+      }
+      uri = nextLine;
+      break;
+    }
+    if (!uri) continue;
     const url = new URL(uri, baseUrl).toString();
 
     const bandwidth = Number(attrs.BANDWIDTH ?? 0) || null;
@@ -167,7 +183,9 @@ const loadVariantsForSelectedCandidate = async () => {
     setVariants(variants);
     setStatus('');
   } catch (e) {
-    setStatus(e?.message ?? String(e));
+    console.error('Failed to load variants, falling back to single quality:', e);
+    setVariants([{ url: u }]);
+    setStatus('Quality check failed. Defaulting to single quality.');
   }
 };
 

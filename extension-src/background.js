@@ -76,8 +76,100 @@ const scanTabForM3u8 = async (tabId) => {
   return (result ?? []).length;
 };
 
+let ruleCounter = 1;
+const activeRules = new Map();
+
+const setRefererRule = async (targetUrl, referer) => {
+  try {
+    const host = new URL(targetUrl).hostname;
+    if (activeRules.has(host)) return;
+    const ruleId = ruleCounter++;
+    
+    let origin = null;
+    try {
+      const refUrl = new URL(referer);
+      if (refUrl.protocol.startsWith('http')) {
+        origin = refUrl.origin;
+      }
+    } catch {}
+
+    const requestHeaders = [
+      { header: 'Referer', operation: 'set', value: referer }
+    ];
+    if (origin) {
+      requestHeaders.push({ header: 'Origin', operation: 'set', value: origin });
+    }
+
+    const rule = {
+      id: ruleId,
+      priority: 1,
+      action: {
+        type: 'modifyHeaders',
+        requestHeaders
+      },
+      condition: {
+        urlFilter: `||${host}`,
+        resourceTypes: ['xmlhttprequest']
+      }
+    };
+
+    await chrome.declarativeNetRequest.updateSessionRules({
+      addRules: [rule]
+    });
+    activeRules.set(host, ruleId);
+  } catch (e) {
+    console.error('Error setting referer rule:', e);
+  }
+};
+
+const clearRefererRule = async (targetUrl) => {
+  try {
+    const host = new URL(targetUrl).hostname;
+    const ruleId = activeRules.get(host);
+    if (ruleId) {
+      await chrome.declarativeNetRequest.updateSessionRules({
+        removeRuleIds: [ruleId]
+      });
+      activeRules.delete(host);
+    }
+  } catch (e) {
+    console.error('Error clearing referer rule:', e);
+  }
+};
+
+const clearAllSessionRules = async () => {
+  try {
+    const rules = await chrome.declarativeNetRequest.getSessionRules();
+    const ids = rules.map((r) => r.id);
+    if (ids.length > 0) {
+      await chrome.declarativeNetRequest.updateSessionRules({
+        removeRuleIds: ids
+      });
+    }
+    activeRules.clear();
+  } catch (e) {
+    console.error('Failed to clear session rules:', e);
+  }
+};
+
+chrome.runtime.onInstalled.addListener(clearAllSessionRules);
+chrome.runtime.onStartup.addListener(clearAllSessionRules);
+clearAllSessionRules();
+
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   (async () => {
+    if (message?.type === 'setRefererRule') {
+      await setRefererRule(message.targetUrl, message.referer);
+      sendResponse({ ok: true });
+      return;
+    }
+
+    if (message?.type === 'clearRefererRule') {
+      await clearRefererRule(message.targetUrl);
+      sendResponse({ ok: true });
+      return;
+    }
+
     if (message?.type === 'getCandidates') {
       const tabId = message.tabId ?? sender.tab?.id;
       const urls = tabCandidates.get(tabId) ? [...tabCandidates.get(tabId)] : [];
