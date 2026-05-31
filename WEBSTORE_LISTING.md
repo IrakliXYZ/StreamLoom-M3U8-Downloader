@@ -32,6 +32,7 @@ StreamLoom needs a small set of permissions to (1) discover HLS playlists used b
 - scripting: used only when you click “Scan page”. StreamLoom injects a small script into the current tab (and its frames) to search the page HTML and inline scripts for m3u8 URLs in cases where the playlist URL is not easily discoverable via network detection. This scan does not read passwords or form fields; it only looks for URL-like strings that end in .m3u8 and returns the matches to the extension.
 - downloads: used to save the final MP4 file through the browser’s download manager. The download is visible in Chrome’s Downloads UI and follows your browser’s download settings.
 - offscreen: used to run the FFmpeg WebAssembly remuxing step in an offscreen document (required in Manifest V3 for long-running/local processing). This is used to combine downloaded HLS segments into a single MP4 locally, without uploading the video anywhere.
+- storage: used to temporarily store discovered HLS playlists and active download progress metrics in memory via `chrome.storage.session`. This allows the extension to maintain state and synchronize progress updates seamlessly with the user popup interface even if the ephemeral background service worker is recycled or goes to sleep during download.
 - tabs and activeTab: used to identify the active tab the user is on (so the extension knows which page’s streams to show), and to support UI actions like focusing the current page when you click “Open source tab”. StreamLoom does not read your browsing history.
 
 Remote code:
