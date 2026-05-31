@@ -1,5 +1,4 @@
-const tabCandidates = new Map();
-let offscreenReady = false;
+let offscreenPromise = null;
 
 const normalizeCandidate = (u) => {
   try {
@@ -13,13 +12,16 @@ const normalizeCandidate = (u) => {
 
 const looksLikeM3u8 = (u) => /\.m3u8(\?|$)/i.test(u);
 
-const addCandidate = (tabId, u) => {
+const addCandidate = async (tabId, u) => {
   const url = normalizeCandidate(u);
   if (!url) return;
   if (!looksLikeM3u8(url)) return;
-  const set = tabCandidates.get(tabId) ?? new Set();
+  
+  const { tabCandidates = {} } = await chrome.storage.session.get('tabCandidates');
+  const set = new Set(tabCandidates[tabId] || []);
   set.add(url);
-  tabCandidates.set(tabId, set);
+  tabCandidates[tabId] = [...set];
+  await chrome.storage.session.set({ tabCandidates });
 };
 
 chrome.webRequest.onCompleted.addListener(
@@ -30,26 +32,31 @@ chrome.webRequest.onCompleted.addListener(
   { urls: ['<all_urls>'] },
 );
 
-chrome.tabs.onRemoved.addListener((tabId) => {
-  tabCandidates.delete(tabId);
+chrome.tabs.onRemoved.addListener(async (tabId) => {
+  const { tabCandidates = {} } = await chrome.storage.session.get('tabCandidates');
+  if (tabCandidates[tabId]) {
+    delete tabCandidates[tabId];
+    await chrome.storage.session.set({ tabCandidates });
+  }
 });
 
 const ensureOffscreen = async () => {
-  if (offscreenReady) return;
-  if (chrome.offscreen?.hasDocument) {
+  if (offscreenPromise) return offscreenPromise;
+  offscreenPromise = (async () => {
     const has = await chrome.offscreen.hasDocument();
-    if (has) {
-      offscreenReady = true;
-      return;
+    if (!has) {
+      await chrome.offscreen.createDocument({
+        url: 'offscreen.html',
+        reasons: ['BLOBS'],
+        justification: 'Transcode HLS (m3u8) to MP4 locally.',
+      });
     }
+  })();
+  try {
+    await offscreenPromise;
+  } finally {
+    offscreenPromise = null;
   }
-
-  await chrome.offscreen.createDocument({
-    url: 'offscreen.html',
-    reasons: ['BLOBS'],
-    justification: 'Transcode HLS (m3u8) to MP4 locally.',
-  });
-  offscreenReady = true;
 };
 
 const scanTabForM3u8 = async (tabId) => {
@@ -72,18 +79,18 @@ const scanTabForM3u8 = async (tabId) => {
     },
   });
 
-  for (const u of result ?? []) addCandidate(tabId, u);
+  for (const u of result ?? []) await addCandidate(tabId, u);
   return (result ?? []).length;
 };
-
-let ruleCounter = 1;
-const activeRules = new Map();
 
 const setRefererRule = async (targetUrl, referer) => {
   try {
     const host = new URL(targetUrl).hostname;
-    if (activeRules.has(host)) return;
-    const ruleId = ruleCounter++;
+    
+    const { activeRules = {}, ruleCounter = 1 } = await chrome.storage.session.get(['activeRules', 'ruleCounter']);
+    if (activeRules[host]) return;
+    
+    const ruleId = ruleCounter;
     
     let origin = null;
     try {
@@ -125,7 +132,9 @@ const setRefererRule = async (targetUrl, referer) => {
     await chrome.declarativeNetRequest.updateSessionRules({
       addRules: [rule]
     });
-    activeRules.set(host, ruleId);
+    
+    activeRules[host] = ruleId;
+    await chrome.storage.session.set({ activeRules, ruleCounter: ruleId + 1 });
   } catch (e) {
     console.error('Error setting referer rule:', e);
   }
@@ -134,12 +143,15 @@ const setRefererRule = async (targetUrl, referer) => {
 const clearRefererRule = async (targetUrl) => {
   try {
     const host = new URL(targetUrl).hostname;
-    const ruleId = activeRules.get(host);
+    const { activeRules = {} } = await chrome.storage.session.get('activeRules');
+    
+    const ruleId = activeRules[host];
     if (ruleId) {
       await chrome.declarativeNetRequest.updateSessionRules({
         removeRuleIds: [ruleId]
       });
-      activeRules.delete(host);
+      delete activeRules[host];
+      await chrome.storage.session.set({ activeRules });
     }
   } catch (e) {
     console.error('Error clearing referer rule:', e);
@@ -155,7 +167,7 @@ const clearAllSessionRules = async () => {
         removeRuleIds: ids
       });
     }
-    activeRules.clear();
+    await chrome.storage.session.set({ activeRules: {}, ruleCounter: 1 });
   } catch (e) {
     console.error('Failed to clear session rules:', e);
   }
@@ -163,7 +175,16 @@ const clearAllSessionRules = async () => {
 
 chrome.runtime.onInstalled.addListener(clearAllSessionRules);
 chrome.runtime.onStartup.addListener(clearAllSessionRules);
-clearAllSessionRules();
+
+chrome.downloads.onChanged.addListener(async (delta) => {
+  const { activeDownloadId } = await chrome.storage.session.get('activeDownloadId');
+  if (activeDownloadId && delta.id === activeDownloadId && delta.state) {
+    if (delta.state.current === 'complete' || delta.state.current === 'interrupted') {
+      chrome.offscreen.closeDocument().catch(() => {});
+      await chrome.storage.session.remove(['activeJobId', 'activeJobProgress', 'activeDownloadId']);
+    }
+  }
+});
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   (async () => {
@@ -181,14 +202,19 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
     if (message?.type === 'getCandidates') {
       const tabId = message.tabId ?? sender.tab?.id;
-      const urls = tabCandidates.get(tabId) ? [...tabCandidates.get(tabId)] : [];
+      const { tabCandidates = {} } = await chrome.storage.session.get('tabCandidates');
+      const urls = tabCandidates[tabId] || [];
       sendResponse({ ok: true, urls });
       return;
     }
 
     if (message?.type === 'clearCandidates') {
       const tabId = message.tabId ?? sender.tab?.id;
-      tabCandidates.delete(tabId);
+      const { tabCandidates = {} } = await chrome.storage.session.get('tabCandidates');
+      if (tabCandidates[tabId]) {
+        delete tabCandidates[tabId];
+        await chrome.storage.session.set({ tabCandidates });
+      }
       sendResponse({ ok: true });
       return;
     }
@@ -205,8 +231,17 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     }
 
     if (message?.type === 'startJob') {
+      const { activeJobId } = await chrome.storage.session.get('activeJobId');
+      if (activeJobId) {
+        sendResponse({ ok: false, error: 'A job is already running.' });
+        return;
+      }
       await ensureOffscreen();
       const jobId = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+      const activeJobProgress = { event: 'progress', message: 'Starting…', progress: 0.01 };
+      
+      await chrome.storage.session.set({ activeJobId: jobId, activeJobProgress });
+      
       await chrome.runtime.sendMessage({
         type: 'offscreenRunJob',
         jobId,
@@ -218,6 +253,12 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       return;
     }
 
+    if (message?.type === 'getJobState') {
+      const { activeJobId, activeJobProgress } = await chrome.storage.session.get(['activeJobId', 'activeJobProgress']);
+      sendResponse({ ok: true, jobId: activeJobId, progress: activeJobProgress });
+      return;
+    }
+
     if (message?.type === 'bgDownload') {
       try {
         const downloadId = await chrome.downloads.download({
@@ -225,6 +266,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           filename: message.filename,
           saveAs: false,
         });
+        await chrome.storage.session.set({ activeDownloadId: downloadId });
         sendResponse({ ok: true, downloadId });
       } catch (e) {
         sendResponse({ ok: false, error: e?.message ?? String(e) });
@@ -233,6 +275,15 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     }
 
     if (message?.type === 'jobEvent') {
+      const { activeJobId } = await chrome.storage.session.get('activeJobId');
+      if (message.jobId === activeJobId) {
+        await chrome.storage.session.set({ activeJobProgress: message });
+        
+        if (message.event === 'error') {
+          chrome.offscreen.closeDocument().catch(() => {});
+          await chrome.storage.session.remove(['activeJobId', 'activeJobProgress', 'activeDownloadId']);
+        }
+      }
       sendResponse({ ok: true });
       return;
     }

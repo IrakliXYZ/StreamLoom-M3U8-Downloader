@@ -205,7 +205,6 @@ const runFfmpeg = async (jobId, filename) => {
   const blobUrl = URL.createObjectURL(blob);
   const res = await chrome.runtime.sendMessage({ type: 'bgDownload', url: blobUrl, filename: outName });
   if (!res?.ok) throw new Error(res?.error ?? 'Download failed.');
-  setTimeout(() => URL.revokeObjectURL(blobUrl), 5 * 60_000);
 };
 
 const cleanup = async () => {

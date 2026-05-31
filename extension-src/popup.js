@@ -18,6 +18,19 @@ let activeTabUrl = null;
 let currentVariants = [];
 let runningJobId = null;
 
+const syncUiState = () => {
+  const isRunning = !!runningJobId;
+  const noVariants = currentVariants.length === 0;
+  const noCandidates = candidateSelect.options.length === 0 || (candidateSelect.options.length === 1 && candidateSelect.options[0].value === '');
+
+  downloadBtn.disabled = isRunning || noVariants;
+  scanBtn.disabled = isRunning;
+  clearBtn.disabled = isRunning;
+  refreshBtn.disabled = isRunning;
+  candidateSelect.disabled = isRunning || noCandidates;
+  qualitySelect.disabled = isRunning || noVariants;
+};
+
 const setStatus = (t, progress = null) => {
   statusEl.textContent = t ?? '';
   if (progress == null) {
@@ -128,12 +141,11 @@ const setCandidates = (urls) => {
     opt.value = '';
     opt.textContent = 'No m3u8 found yet';
     candidateSelect.appendChild(opt);
-    candidateSelect.disabled = true;
     candidateHint.textContent = 'Play the video first, then refresh or click “Scan page”.';
+    syncUiState();
     return;
   }
 
-  candidateSelect.disabled = false;
   candidateHint.textContent = `${list.length} candidate${list.length === 1 ? '' : 's'} captured for this tab.`;
   for (const u of list) {
     const opt = document.createElement('option');
@@ -141,20 +153,18 @@ const setCandidates = (urls) => {
     opt.textContent = u.length > 72 ? `${u.slice(0, 34)}…${u.slice(-34)}` : u;
     candidateSelect.appendChild(opt);
   }
+  syncUiState();
 };
 
 const setVariants = (variants) => {
   currentVariants = variants;
   qualitySelect.innerHTML = '';
   if (!variants.length) {
-    qualitySelect.disabled = true;
-    downloadBtn.disabled = true;
     qualityHint.textContent = 'Select a stream to load qualities.';
+    syncUiState();
     return;
   }
 
-  qualitySelect.disabled = false;
-  downloadBtn.disabled = false;
   qualityHint.textContent = variants.length === 1 ? 'Single quality playlist.' : `${variants.length} qualities detected.`;
   variants.forEach((v, i) => {
     const opt = document.createElement('option');
@@ -162,6 +172,7 @@ const setVariants = (variants) => {
     opt.textContent = labelVariant(v, i);
     qualitySelect.appendChild(opt);
   });
+  syncUiState();
 };
 
 const loadCandidates = async () => {
@@ -212,12 +223,11 @@ const startDownload = async () => {
   if (!variant?.url) return;
 
   const filename = safeName(filenameInput.value) || defaultFilename(activeTabUrl);
-  downloadBtn.disabled = true;
-  scanBtn.disabled = true;
-  clearBtn.disabled = true;
-  refreshBtn.disabled = true;
-
+  
+  runningJobId = 'starting'; // temporary state to prevent double clicks immediately
+  syncUiState();
   setStatus('Starting…', 0.01);
+  
   const res = await chrome.runtime.sendMessage({
     type: 'startJob',
     m3u8Url: variant.url,
@@ -225,8 +235,24 @@ const startDownload = async () => {
     referer: activeTabUrl,
   });
 
-  if (!res?.ok) throw new Error(res?.error ?? 'Unable to start job.');
+  if (!res?.ok) {
+    runningJobId = null;
+    syncUiState();
+    throw new Error(res?.error ?? 'Unable to start job.');
+  }
   runningJobId = res.jobId;
+  syncUiState();
+};
+
+const restoreJobState = async () => {
+  const res = await chrome.runtime.sendMessage({ type: 'getJobState' });
+  if (res?.ok && res.jobId) {
+    runningJobId = res.jobId;
+    syncUiState();
+    if (res.progress) {
+      setStatus(res.progress.message ?? 'Working…', res.progress.progress ?? null);
+    }
+  }
 };
 
 chrome.runtime.onMessage.addListener((msg) => {
@@ -241,20 +267,14 @@ chrome.runtime.onMessage.addListener((msg) => {
   if (msg.event === 'done') {
     setStatus('Saved to Downloads.', 1);
     runningJobId = null;
-    downloadBtn.disabled = false;
-    scanBtn.disabled = false;
-    clearBtn.disabled = false;
-    refreshBtn.disabled = false;
+    syncUiState();
     return;
   }
 
   if (msg.event === 'error') {
     setStatus(msg.message ?? 'Failed.');
     runningJobId = null;
-    downloadBtn.disabled = false;
-    scanBtn.disabled = false;
-    clearBtn.disabled = false;
-    refreshBtn.disabled = false;
+    syncUiState();
   }
 });
 
@@ -290,14 +310,12 @@ candidateSelect.addEventListener('change', loadVariantsForSelectedCandidate);
 downloadBtn.addEventListener('click', () => {
   startDownload().catch((e) => {
     setStatus(e?.message ?? String(e));
-    downloadBtn.disabled = false;
-    scanBtn.disabled = false;
-    clearBtn.disabled = false;
-    refreshBtn.disabled = false;
     runningJobId = null;
+    syncUiState();
   });
 });
 
 await initTab();
+await restoreJobState();
 await loadCandidates();
 await loadVariantsForSelectedCandidate();
