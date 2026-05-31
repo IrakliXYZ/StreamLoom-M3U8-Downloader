@@ -100,12 +100,21 @@ const setRefererRule = async (targetUrl, referer) => {
       requestHeaders.push({ header: 'Origin', operation: 'set', value: origin });
     }
 
+    const extensionOrigin = `chrome-extension://${chrome.runtime.id}`;
+    const responseHeaders = [
+      { header: 'Access-Control-Allow-Origin', operation: 'set', value: extensionOrigin },
+      { header: 'Access-Control-Allow-Methods', operation: 'set', value: 'GET, HEAD, POST, OPTIONS' },
+      { header: 'Access-Control-Allow-Headers', operation: 'set', value: '*' },
+      { header: 'Access-Control-Allow-Credentials', operation: 'set', value: 'true' }
+    ];
+
     const rule = {
       id: ruleId,
       priority: 1,
       action: {
         type: 'modifyHeaders',
-        requestHeaders
+        requestHeaders,
+        responseHeaders
       },
       condition: {
         urlFilter: `||${host}`,

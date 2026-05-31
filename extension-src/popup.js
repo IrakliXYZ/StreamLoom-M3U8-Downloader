@@ -54,7 +54,7 @@ const fetchText = async (u, referer) => {
     await chrome.runtime.sendMessage({ type: 'setRefererRule', targetUrl: u, referer });
   }
   try {
-    const res = await fetch(u, { credentials: 'include' });
+    const res = await fetch(u);
     if (!res.ok) throw new Error(`Failed to fetch playlist: ${res.status}`);
     return await res.text();
   } finally {
