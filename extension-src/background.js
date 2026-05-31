@@ -60,7 +60,7 @@ const ensureOffscreen = async () => {
 };
 
 const scanTabForM3u8 = async (tabId) => {
-  const [{ result } = { result: [] }] = await chrome.scripting.executeScript({
+  const results = await chrome.scripting.executeScript({
     target: { tabId, allFrames: true },
     func: () => {
       const found = new Set();
@@ -79,8 +79,15 @@ const scanTabForM3u8 = async (tabId) => {
     },
   });
 
-  for (const u of result ?? []) await addCandidate(tabId, u);
-  return (result ?? []).length;
+  let addedCount = 0;
+  for (const frameResult of results ?? []) {
+    const urls = frameResult.result ?? [];
+    for (const u of urls) {
+      await addCandidate(tabId, u);
+      addedCount++;
+    }
+  }
+  return addedCount;
 };
 
 const setRefererRule = async (targetUrl, referer) => {
@@ -181,6 +188,7 @@ chrome.downloads.onChanged.addListener(async (delta) => {
   if (activeDownloadId && delta.id === activeDownloadId && delta.state) {
     if (delta.state.current === 'complete' || delta.state.current === 'interrupted') {
       chrome.offscreen.closeDocument().catch(() => {});
+      await clearAllSessionRules().catch(() => {});
       await chrome.storage.session.remove(['activeJobId', 'activeJobProgress', 'activeDownloadId']);
     }
   }
@@ -242,13 +250,29 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       
       await chrome.storage.session.set({ activeJobId: jobId, activeJobProgress });
       
-      await chrome.runtime.sendMessage({
-        type: 'offscreenRunJob',
-        jobId,
-        m3u8Url: message.m3u8Url,
-        filename: message.filename,
-        referer: message.referer,
-      });
+      // Send the job to the offscreen document with retries to handle the loading race condition
+      let sent = false;
+      for (let i = 0; i < 20; i++) {
+        try {
+          await chrome.runtime.sendMessage({
+            type: 'offscreenRunJob',
+            jobId,
+            m3u8Url: message.m3u8Url,
+            filename: message.filename,
+            referer: message.referer,
+          });
+          sent = true;
+          break;
+        } catch (err) {
+          await new Promise((resolve) => setTimeout(resolve, 100));
+        }
+      }
+      
+      if (!sent) {
+        sendResponse({ ok: false, error: 'Failed to establish connection with the download engine.' });
+        return;
+      }
+      
       sendResponse({ ok: true, jobId });
       return;
     }
@@ -281,6 +305,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         
         if (message.event === 'error') {
           chrome.offscreen.closeDocument().catch(() => {});
+          await clearAllSessionRules().catch(() => {});
           await chrome.storage.session.remove(['activeJobId', 'activeJobProgress', 'activeDownloadId']);
         }
       }

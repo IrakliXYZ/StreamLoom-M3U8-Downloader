@@ -29,6 +29,7 @@
     "downloads",
     "offscreen",
     "scripting",
+    "storage",
     "tabs",
     "webRequest"
   ],

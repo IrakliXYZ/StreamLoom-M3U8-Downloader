@@ -24,19 +24,25 @@ const ensureFfmpeg = async (jobId) => {
   ffmpegLoaded = true;
 };
 
+const fetchWithRetry = async (url, options = {}, retries = 3, delay = 1000) => {
+  for (let i = 0; i < retries; i++) {
+    try {
+      const res = await fetch(url, options);
+      if (res.ok) return res;
+      if (i === retries - 1) throw new Error(`HTTP ${res.status}`);
+    } catch (e) {
+      if (i === retries - 1) throw e;
+    }
+    await new Promise((resolve) => setTimeout(resolve, delay));
+  }
+};
+
 const fetchText = async (u, referer) => {
   if (referer) {
     await chrome.runtime.sendMessage({ type: 'setRefererRule', targetUrl: u, referer });
   }
-  try {
-    const res = await fetch(u);
-    if (!res.ok) throw new Error(`Failed to fetch: ${res.status}`);
-    return await res.text();
-  } finally {
-    if (referer) {
-      await chrome.runtime.sendMessage({ type: 'clearRefererRule', targetUrl: u });
-    }
-  }
+  const res = await fetchWithRetry(u);
+  return await res.text();
 };
 
 const parseMediaPlaylist = (text, baseUrl) => {
@@ -58,16 +64,9 @@ const rewriteKeyLine = async (line, baseUrl, keyIndex, referer) => {
   if (referer) {
     await chrome.runtime.sendMessage({ type: 'setRefererRule', targetUrl: keyUrl, referer });
   }
-  try {
-    const res = await fetch(keyUrl);
-    if (!res.ok) throw new Error(`Failed to fetch key: ${res.status}`);
-    const buf = new Uint8Array(await res.arrayBuffer());
-    await ffmpeg.writeFile(keyName, buf);
-  } finally {
-    if (referer) {
-      await chrome.runtime.sendMessage({ type: 'clearRefererRule', targetUrl: keyUrl });
-    }
-  }
+  const res = await fetchWithRetry(keyUrl);
+  const buf = new Uint8Array(await res.arrayBuffer());
+  await ffmpeg.writeFile(keyName, buf);
   const rewritten = line.replace(/URI="([^"]+)"/, `URI="${keyName}"`);
   return { line: rewritten, wroteKey: true };
 };
@@ -80,16 +79,9 @@ const rewriteMapLine = async (line, baseUrl, mapIndex, referer) => {
   if (referer) {
     await chrome.runtime.sendMessage({ type: 'setRefererRule', targetUrl: mapUrl, referer });
   }
-  try {
-    const res = await fetch(mapUrl);
-    if (!res.ok) throw new Error(`Failed to fetch map segment: ${res.status}`);
-    const buf = new Uint8Array(await res.arrayBuffer());
-    await ffmpeg.writeFile(mapName, buf);
-  } finally {
-    if (referer) {
-      await chrome.runtime.sendMessage({ type: 'clearRefererRule', targetUrl: mapUrl });
-    }
-  }
+  const res = await fetchWithRetry(mapUrl);
+  const buf = new Uint8Array(await res.arrayBuffer());
+  await ffmpeg.writeFile(mapName, buf);
   const rewritten = line.replace(/URI="([^"]+)"/, `URI="${mapName}"`);
   return { line: rewritten, wroteMap: true };
 };
@@ -172,21 +164,14 @@ const buildLocalPlaylist = async (playlistUrl, referer, jobId) => {
     if (referer) {
       await chrome.runtime.sendMessage({ type: 'setRefererRule', targetUrl: abs, referer });
     }
-    try {
-      const headers = {};
-      if (currentByteRange) {
-        headers['Range'] = `bytes=${currentByteRange.offset}-${currentByteRange.offset + currentByteRange.length - 1}`;
-        currentByteRange = null;
-      }
-      const res = await fetch(abs, { headers });
-      if (!res.ok) throw new Error(`Failed segment ${segIndex + 1}: ${res.status}`);
-      const buf = new Uint8Array(await res.arrayBuffer());
-      await ffmpeg.writeFile(local, buf);
-    } finally {
-      if (referer) {
-        await chrome.runtime.sendMessage({ type: 'clearRefererRule', targetUrl: abs });
-      }
+    const headers = {};
+    if (currentByteRange) {
+      headers['Range'] = `bytes=${currentByteRange.offset}-${currentByteRange.offset + currentByteRange.length - 1}`;
+      currentByteRange = null;
     }
+    const res = await fetchWithRetry(abs, { headers });
+    const buf = new Uint8Array(await res.arrayBuffer());
+    await ffmpeg.writeFile(local, buf);
     outLines.push(local);
     segIndex += 1;
   }
@@ -198,7 +183,7 @@ const buildLocalPlaylist = async (playlistUrl, referer, jobId) => {
 const runFfmpeg = async (jobId, filename) => {
   const outName = filename.toLowerCase().endsWith('.mp4') ? filename : `${filename}.mp4`;
   sendEvent(jobId, { event: 'progress', message: 'Muxing MP4…', progress: 0.74 });
-  await ffmpeg.exec(['-i', 'local.m3u8', '-c', 'copy', '-bsf:a', 'aac_adtstoasc', 'out.mp4']);
+  await ffmpeg.exec(['-i', 'local.m3u8', '-c', 'copy', 'out.mp4']);
   sendEvent(jobId, { event: 'progress', message: 'Preparing download…', progress: 0.92 });
   const data = await ffmpeg.readFile('out.mp4');
   const blob = new Blob([data.buffer], { type: 'video/mp4' });
@@ -211,7 +196,7 @@ const cleanup = async () => {
   const entries = await ffmpeg.listDir('.');
   await Promise.all(
     entries
-      .filter((e) => e.isFile)
+      .filter((e) => !e.isDir)
       .map((e) => ffmpeg.deleteFile(e.name).catch(() => {})),
   );
 };

@@ -207,12 +207,23 @@ const initTab = async () => {
   activeTabUrl = tab?.url ?? null;
   if (activeTabUrl) {
     filenameInput.value = defaultFilename(activeTabUrl);
-    openSite.textContent = new URL(activeTabUrl).hostname;
+    try {
+      const u = new URL(activeTabUrl);
+      if (u.protocol.startsWith('http')) {
+        openSite.textContent = u.hostname;
+      } else {
+        openSite.textContent = 'Local Tab';
+      }
+    } catch {
+      openSite.textContent = 'Local Tab';
+    }
   }
   openSite.onclick = async (e) => {
     e.preventDefault();
     if (activeTabId == null) return;
-    await chrome.tabs.update(activeTabId, { active: true });
+    try {
+      await chrome.tabs.update(activeTabId, { active: true });
+    } catch {}
   };
 };
 
@@ -315,7 +326,12 @@ downloadBtn.addEventListener('click', () => {
   });
 });
 
-await initTab();
-await restoreJobState();
-await loadCandidates();
-await loadVariantsForSelectedCandidate();
+try {
+  await initTab();
+  await restoreJobState();
+  await loadCandidates();
+  await loadVariantsForSelectedCandidate();
+} catch (e) {
+  console.error('Error during popup initialization:', e);
+  setStatus('Initialization failed. Please refresh or try again.');
+}
